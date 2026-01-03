@@ -1,0 +1,64 @@
+services:
+  db:
+    image: postgres:18.1-alpine3.23
+    shm_size: 128mb
+    container_name: geonames_db
+    command: >
+      postgres
+        -c shared_preload_libraries='pg_stat_statements'
+        -c autovacuum=on
+        -c max_connections=50
+        -c shared_buffers='128MB'
+        -c effective_cache_size='384MB'
+        -c maintenance_work_mem='32MB'
+        -c checkpoint_completion_target=0.9
+        -c wal_buffers='3932kB'
+        -c default_statistics_target=100
+        -c random_page_cost=1.1
+        -c effective_io_concurrency=200
+        -c work_mem='2621kB'
+        -c min_wal_size='1GB'
+        -c max_wal_size='4GB'
+        -c huge_pages='off'    
+    environment:
+      POSTGRES_DB: geonames
+      POSTGRES_USER: geonames
+      POSTGRES_PASSWORD: geonames
+    ports:
+      - "5444:5432"
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 512MB      
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U geonames -d geonames"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  loader:
+    build:
+      context: ./loader
+    container_name: geonames_loader
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Load all European countries except UK and Greece (no data for Greece)
+      COUNTRIES: "AT,BE,BG,CY,CZ,DE,DK,EE,ES,FI,FR,HR,HU,IE,IT,LT,LU,LV,MT,NL,PL,PT,RO,SE,SI,SK"
+      PGHOST: db
+      PGPORT: "5432"
+      PGDATABASE: geonames
+      PGUSER: geonames
+      PGPASSWORD: geonames
+      # Using UNLOGGED tables for faster inserts
+      UNLOGGED: "true"
+      # If true, delete all rows before reloading countries
+      TRUNCATE_BEFORE_LOAD: "false"
+    restart: "no"
+
+volumes:
+  pgdata:
