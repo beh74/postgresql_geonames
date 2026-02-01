@@ -52,6 +52,7 @@ The GeoNames postal code files contain the following fields (tab-separated):
 10. latitude (WGS84)
 11. longitude (WGS84)
 12. accuracy
+13. place_name_search : lower unaccent place name using the function immutable_unaccent_latin_lowerß
 
 Note:
 - A single postal code may map to **multiple places**
@@ -72,7 +73,7 @@ public.geonames_postal
 CREATE TABLE public.geonames_postal (
   country_code  CHAR(2)      NOT NULL,
   postal_code   VARCHAR(20)  NOT NULL,
-  place_name    VARCHAR(180) NOT NULL,
+  place_name    VARCHAR(180) NULL,
   admin_name1   VARCHAR(100),
   admin_code1   VARCHAR(20),
   admin_name2   VARCHAR(100),
@@ -81,7 +82,8 @@ CREATE TABLE public.geonames_postal (
   admin_code3   VARCHAR(20),
   latitude      DOUBLE PRECISION,
   longitude     DOUBLE PRECISION,
-  accuracy      SMALLINT
+  accuracy      SMALLINT,
+	place_name_search VARCHAR(180) GENERATED ALWAYS AS (immutable_unaccent_latin_lower(place_name::text)) STORED NULL
 );
 ```
 
@@ -150,33 +152,143 @@ Tests were performed on a MacBook Pro M4 Pro with 24 GB of memory.
 The docker compose file uses a command parameter to fit with pgTune parameters (2 cpu, 256 MB of memory).
 
 
-Loading all European countries except Greece (no data for this country) : AT,BE,BG,CY,CZ,DE,DK,EE,ES,FI,FR,HR,HU,IE,IT,LT,LU,LV,MT,NL,PL,PT,RO,SE,SI,SK
+Loading all European countries except Greece (no data for this country) : AT,BE,BG,CY,CZ,DE,DK,EE,ES,FI,FR,HR,HU,IE,IT,LT,LU,LV,MT,NL,PL,PT,RO,SE,SI,SK,CH
 
 Parameters :
-- COUNTRIES: "AT,BE,BG,CY,CZ,DE,DK,EE,ES,FI,FR,HR,HU,IE,IT,LT,LU,LV,MT,NL,PL,PT,RO,SE,SI,SK"
+- COUNTRIES: "AT,BE,BG,CY,CZ,DE,DK,EE,ES,FI,FR,HR,HU,IE,IT,LT,LU,LV,MT,NL,PL,PT,RO,SE,SI,SK,CH"
 - UNLOGGED: "true"
 - TRUNCATE_BEFORE_LOAD: "false"
 
 Runs :
-- First load (empty database) : **10 seconds, 552'914 rows**
-- Second load : **11 seconds, 552'914 rows**
+- First load (empty database) : **11 seconds, 579'304 rows**
+- Second load : **12 seconds, 5579'304 rows**
 
-Database size : **114 MB**
+Database size : **121 MB**
 
-### Query performances
+# Accent and Case-Insensitive Search Pattern
 
-Queries performed on the 'European database'
+This project demonstrates a **generic and reusable text search pattern** suitable for:
 
+- people names  
+- product names  
+- place names  
+- any human-entered text containing accents, punctuation, or formatting variations  
+
+The goal is to provide a **robust, user-friendly search** without requiring a full-text search engine.
+
+---
+
+## Principle
+
+All searchable text is **normalized once** using a deterministic SQL function that:
+
+- removes Latin accents (`é → e`, `ü → u`)
+- expands ligatures (`Æ → AE`, `Œ → OE`)
+- converts text to lowercase
+- removes all non-alphanumeric characters
+
+The normalized value is stored in a **generated column** and indexed using a **GIN trigram index**.
+
+This makes searches:
+- accent-insensitive
+- case-insensitive
+- resilient to formatting differences
+
+Here is the function code :
 ```sql
-select * from geonames_postal gp where gp.postal_code =$1 and gp.country_code =$2
+CREATE OR REPLACE FUNCTION public.immutable_unaccent_latin_lower(txt text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT regexp_replace(
+    -- Step 2: keep only letters and digits
+    lower(
+      -- Step 1: remove Latin diacritics / normalize ligatures
+      regexp_replace(
+        regexp_replace(
+          translate(
+            txt,
+            -- Latin diacritics (common European set)
+            'ÀÁÂÃÄÅĀĂĄÇĆĈČĎĐÈÉÊËĒĔĖĘĚÌÍÎÏĪĮÑŃŇÒÓÔÕÖØŌŐŔŘŚŜŠȘŤŢȚÙÚÛÜŪŮŰŲÝŸŹŻŽ' ||
+            'àáâãäåāăąçćĉčďđèéêëēĕėęěìíîïīįñńňòóôõöøōőŕřśŝšșťţțùúûüūůűųýÿźżž',
+            'AAAAAAAAACCCCDD' || 'EEEEEEEEE' || 'IIIIII' || 'NNN' || 'OOOOOOOO' || 'RR' || 'SSSS' || 'TTT' || 'UUUUUUUU' || 'YY' || 'ZZZ' ||
+            'aaaaaaaaaccccdd' || 'eeeeeeeee' || 'iiiiii' || 'nnn' || 'oooooooo' || 'rr' || 'ssss' || 'ttt' || 'uuuuuuuu' || 'yy' || 'zzz'
+          ),
+          -- Ligatures / digraphs (1→2): expand before stripping non-alnum
+          'Æ', 'AE', 'g'
+        ),
+        'Œ', 'OE', 'g'
+      )
+    ),
+    '[^a-z0-9]+',
+    '',
+    'g'
+  );
+$$;
 ```
 
-Average query performances : **0.08 ms**
-
+And this is how this function is used :
 
 ```sql
-SELECT * FROM public.geonames_postal WHERE lower(place_name) LIKE $1 || lower($2) || $3
+ALTER TABLE public.geonames_postal
+ADD COLUMN IF NOT EXISTS place_name_search VARCHAR(180)
+GENERATED ALWAYS AS (public.immutable_unaccent_latin_lower(place_name)) STORED;
+
+CREATE INDEX IF NOT EXISTS geonames_postal_place_name_search_trgm_idx
+ON public.geonames_postal
+USING GIN (place_name_search gin_trgm_ops);
 ```
 
-Average query performances : **0.30 ms**
+---
+
+## Example Query
+
+```sql
+WITH q AS (
+  SELECT public.immutable_unaccent_latin_lower('Crans pres-Céligny') AS needle
+)
+SELECT gp.postal_code, gp.place_name 
+FROM public.geonames_postal gp
+CROSS JOIN q
+WHERE gp.place_name_search LIKE '%' || q.needle || '%'
+ORDER BY gp.place_name_search <-> q.needle
+LIMIT 50;
+```
+
+The real name of this place name is 'Crans-près-Céligny'. 
+
+```sql
+select immutable_unaccent_latin_lower('Crans pres-Céligny')
+give this result : cranspresceligny
+```
+
+Thanks to this normalization, users can successfully find the same result using a wide range of inputs, for example:
+
+| User input | Normalized input |
+|-----------|------------------|
+| `Crans-près-Céligny` | `cranspresceligny` |
+| `Crans pres Celigny` | `cranspresceligny` |
+| `CRANS PRES-CELIGNY` | `cranspresceligny` |
+| `celigny` | `celigny` |
+
+All of these inputs are normalized using the same function and matched against the indexed searchable column.
+
+
+### Query Behavior
+
+The query:
+- Normalizes the user input 
+- Filters rows whose normalized value contains the input (substring match)
+- Orders results by trigram similarity so closer matches appear first
+- Returns the top results
+
+Why This Pattern?
+- Simple and predictable behavior
+- Fast and index-friendly
+- Handles accents and spelling variations naturally
+- Well suited for search bars and autocomplete
+
+**Normalize once → store → index → search consistently**
+
 

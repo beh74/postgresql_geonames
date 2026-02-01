@@ -37,7 +37,7 @@ services:
       test: ["CMD-SHELL", "pg_isready -U geonames -d geonames"]
       interval: 3s
       timeout: 3s
-      retries: 30
+      retries: 10
 
   loader:
     build:
@@ -48,7 +48,7 @@ services:
         condition: service_healthy
     environment:
       # Load all European countries except UK and Greece (no data for Greece)
-      COUNTRIES: "AT,BE,BG,CY,CZ,DE,DK,EE,ES,FI,FR,HR,HU,IE,IT,LT,LU,LV,MT,NL,PL,PT,RO,SE,SI,SK"
+      COUNTRIES: "AT,BE,BG,CY,CZ,DE,DK,EE,ES,FI,FR,HR,HU,IE,IT,LT,LU,LV,MT,NL,PL,PT,RO,SE,SI,SK,CH"
       PGHOST: db
       PGPORT: "5432"
       PGDATABASE: geonames

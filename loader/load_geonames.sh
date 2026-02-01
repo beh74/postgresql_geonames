@@ -25,7 +25,7 @@ if [[ "${TABLE_EXISTS}" != "t" ]]; then
 CREATE UNLOGGED TABLE public.geonames_postal (
   country_code  CHAR(2)      NOT NULL,
   postal_code   VARCHAR(20)  NOT NULL,
-  place_name    VARCHAR(180) NOT NULL,
+  place_name    VARCHAR(180) NULL,
   admin_name1   VARCHAR(100),
   admin_code1   VARCHAR(20),
   admin_name2   VARCHAR(100),
